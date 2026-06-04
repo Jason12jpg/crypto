@@ -1,6 +1,6 @@
 """
 scraper.py - 加密货币 OHLCV 数据采集器
-使用 ccxt 从 Binance 公开 API 拉取 1H K 线，无需 API Key。
+使用 ccxt 从 Gate.io 公开 API 拉取 1H K 线，无需 API Key。
 """
 import os
 import time
@@ -15,8 +15,8 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_FILE = os.path.join(BASE_DIR, 'data', 'crypto_history.csv')
 
 SYMBOLS = [
-    'BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT',
-    'DOGE/USDT', 'ADA/USDT', 'AVAX/USDT', 'LINK/USDT', 'DOT/USDT',
+    'BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'XRP/USDT', 'DOGE/USDT',
+    'ADA/USDT', 'AVAX/USDT', 'LINK/USDT', 'DOT/USDT', 'SUI/USDT',
 ]
 TIMEFRAME = '1h'
 INITIAL_CANDLES = 720  # 30 days of hourly data
@@ -40,7 +40,7 @@ def fetch_ohlcv(exchange, symbol: str, since_ms: int = None, limit: int = 1000) 
 def main():
     os.makedirs(os.path.join(BASE_DIR, 'data'), exist_ok=True)
 
-    exchange = ccxt.binance({'enableRateLimit': True})
+    exchange = ccxt.gate({'enableRateLimit': True})
 
     # Load existing data to determine since_ms per symbol
     existing = pd.DataFrame()

@@ -18,8 +18,8 @@ LOG_FILE = os.path.join(BASE_DIR, 'data', 'prediction_log.csv')
 WEIGHT_FILE = os.path.join(BASE_DIR, 'data', 'model_weights.csv')
 
 SYMBOLS = [
-    'BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT',
-    'DOGE/USDT', 'ADA/USDT', 'AVAX/USDT', 'LINK/USDT', 'DOT/USDT',
+    'BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'XRP/USDT', 'DOGE/USDT',
+    'ADA/USDT', 'AVAX/USDT', 'LINK/USDT', 'DOT/USDT', 'SUI/USDT',
 ]
 MODEL_NAMES = ['trend', 'momentum', 'volatility', 'macd', 'volume', 'forest', 'xgb', 'lstm']
 DEFAULT_WEIGHTS = {m: 0.5 for m in MODEL_NAMES}
@@ -523,20 +523,45 @@ def generate_prediction(symbol: str) -> dict:
 
     weights = load_weights(symbol)
     model_votes = {}
-    weighted_score = 0.0
-    total_weight = 0.0
 
+    # Collect all model predictions
+    up_score = 0.0
+    down_score = 0.0
     for name, func in ALL_MODELS.items():
         result = func(feat_df)
         model_votes[name] = result
         w = weights.get(name, 0.5)
-        direction_sign = 1.0 if result['direction'] == 'UP' else -1.0
-        weighted_score += w * result['confidence'] * direction_sign
-        total_weight += w
+        weighted_conf = w * result['confidence']
+        if result['direction'] == 'UP':
+            up_score += weighted_conf
+        else:
+            down_score += weighted_conf
 
-    final_direction = 'UP' if weighted_score > 0 else 'DOWN'
-    final_confidence = abs(weighted_score) / (total_weight + 1e-10) * 100
-    final_confidence = min(final_confidence, 99.0)
+    total_score = up_score + down_score
+    if total_score < 1e-10:
+        total_score = 1.0
+
+    # Direction = whichever side has more weighted conviction
+    final_direction = 'UP' if up_score >= down_score else 'DOWN'
+
+    # Confidence = how dominant the winning side is (50% = dead split, 100% = unanimous)
+    winning_score = max(up_score, down_score)
+    dominance = winning_score / total_score  # 0.5 ~ 1.0
+
+    # Scale dominance to a user-friendly 50-95% range
+    # dominance=0.5 → 50%, dominance=1.0 → 95%
+    final_confidence = 50.0 + (dominance - 0.5) * 90.0
+    final_confidence = min(max(final_confidence, 50.0), 95.0)
+
+    # Bonus: count how many models agree
+    agree_count = sum(1 for v in model_votes.values() if v['direction'] == final_direction)
+    # 8/8 agree → +5%, 7/8 → +3%, 6/8 → +1%
+    if agree_count >= 8:
+        final_confidence = min(final_confidence + 5, 95.0)
+    elif agree_count >= 7:
+        final_confidence = min(final_confidence + 3, 95.0)
+    elif agree_count >= 6:
+        final_confidence = min(final_confidence + 1, 95.0)
 
     return {
         'symbol': symbol,
