@@ -1,0 +1,45 @@
+name: Auto-Update Crypto Predictions
+
+on:
+  schedule:
+    - cron: '5 */2 * * *'   # 每 2 小时的第 5 分钟
+  workflow_dispatch:         # 支持手动触发
+
+jobs:
+  update-and-predict:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: |
+          pip install --upgrade pip
+          pip install ccxt pandas numpy scikit-learn xgboost
+
+      - name: Fetch Latest OHLCV Data
+        run: python scraper.py
+        timeout-minutes: 5
+
+      - name: Run Auto-Predict & Evolve
+        run: python auto_predict.py
+        timeout-minutes: 8
+
+      - name: Commit & Push Results
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/ || true
+          git diff --staged --quiet || (git commit -m "data: auto-update crypto predictions [skip ci]" && git push)
