@@ -126,6 +126,38 @@ def _calc_stochastic(high, low, close, period=14):
     d = k.rolling(window=3, min_periods=3).mean()
     return k, d
 
+def _calc_adx(high, low, close, period=14):
+    """Average Directional Index — trend strength."""
+    plus_dm = high.diff()
+    minus_dm = -low.diff()
+    plus_dm = plus_dm.where((plus_dm > minus_dm) & (plus_dm > 0), 0.0)
+    minus_dm = minus_dm.where((minus_dm > plus_dm) & (minus_dm > 0), 0.0)
+    atr = _calc_atr(high, low, close, period)
+    plus_di = 100 * _calc_ema(plus_dm, period) / (atr + 1e-10)
+    minus_di = 100 * _calc_ema(minus_dm, period) / (atr + 1e-10)
+    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di + 1e-10)
+    adx = _calc_ema(dx, period)
+    return adx, plus_di, minus_di
+
+def _calc_williams_r(high, low, close, period=14):
+    """Williams %R — overbought/oversold."""
+    highest = high.rolling(window=period, min_periods=period).max()
+    lowest = low.rolling(window=period, min_periods=period).min()
+    wr = -100 * (highest - close) / (highest - lowest + 1e-10)
+    return wr
+
+def _calc_cci(high, low, close, period=20):
+    """Commodity Channel Index."""
+    tp = (high + low + close) / 3
+    sma_tp = tp.rolling(window=period, min_periods=period).mean()
+    mad = tp.rolling(window=period, min_periods=period).apply(lambda x: np.abs(x - x.mean()).mean(), raw=True)
+    cci = (tp - sma_tp) / (0.015 * mad + 1e-10)
+    return cci
+
+def _calc_roc(series, period=12):
+    """Rate of Change."""
+    return series.pct_change(period) * 100
+
 def _build_features(df: pd.DataFrame) -> pd.DataFrame:
     """Compute all technical indicators and target column."""
     f = df.copy()
@@ -133,49 +165,82 @@ def _build_features(df: pd.DataFrame) -> pd.DataFrame:
     h = f['high']
     l = f['low']
     v = f['volume']
+    o = f['open']
 
-    # Trend
+    # ---- Trend ----
     f['sma_7'] = _calc_sma(c, 7)
     f['sma_25'] = _calc_sma(c, 25)
+    f['sma_50'] = _calc_sma(c, 50)
     f['ema_12'] = _calc_ema(c, 12)
     f['ema_26'] = _calc_ema(c, 26)
+    f['adx'], f['plus_di'], f['minus_di'] = _calc_adx(h, l, c, 14)
 
-    # Momentum
+    # ---- Momentum ----
     f['rsi_14'] = _calc_rsi(c, 14)
+    f['rsi_7'] = _calc_rsi(c, 7)
     f['stoch_k'], f['stoch_d'] = _calc_stochastic(h, l, c, 14)
+    f['williams_r'] = _calc_williams_r(h, l, c, 14)
+    f['cci'] = _calc_cci(h, l, c, 20)
+    f['roc_12'] = _calc_roc(c, 12)
+    f['roc_6'] = _calc_roc(c, 6)
 
-    # MACD
+    # ---- MACD ----
     f['macd_line'], f['macd_signal'], f['macd_hist'] = _calc_macd(c)
 
-    # Volatility
+    # ---- Volatility ----
     f['bb_upper'], f['bb_mid'], f['bb_lower'] = _calc_bollinger(c)
     f['atr_14'] = _calc_atr(h, l, c, 14)
+    f['bb_width'] = (f['bb_upper'] - f['bb_lower']) / (f['bb_mid'] + 1e-10)
 
-    # Volume
+    # ---- Volume ----
     f['obv'] = _calc_obv(c, v)
     f['vol_sma'] = _calc_sma(v, 20)
+    f['vol_ratio'] = v / (f['vol_sma'] + 1e-10)
 
-    # Price changes
+    # ---- Price Action ----
     f['pct_change'] = c.pct_change()
     f['pct_change_3'] = c.pct_change(3)
     f['pct_change_7'] = c.pct_change(7)
+    f['pct_change_24'] = c.pct_change(24)  # 24h change
+    f['body_size'] = (c - o).abs() / (c + 1e-10)  # candle body ratio
+    f['upper_shadow'] = (h - pd.concat([c, o], axis=1).max(axis=1)) / (c + 1e-10)
+    f['lower_shadow'] = (pd.concat([c, o], axis=1).min(axis=1) - l) / (c + 1e-10)
+    f['hl_range'] = (h - l) / (c + 1e-10)
+
+    # ---- Lag features (past N candle returns) ----
+    for lag in [1, 2, 3, 6, 12]:
+        f[f'ret_lag_{lag}'] = c.pct_change(lag)
+
+    # ---- Rolling stats ----
+    f['std_12'] = c.pct_change().rolling(12).std()
+    f['std_24'] = c.pct_change().rolling(24).std()
+    f['mean_12'] = c.pct_change().rolling(12).mean()
 
     # Target: 1 if next close > current close, else 0
     f['target'] = (c.shift(-1) > c).astype(int)
 
-    # Drop rows with NaN features (first ~26 rows from indicators)
-    feature_cols = [
-        'sma_7', 'sma_25', 'ema_12', 'ema_26', 'rsi_14', 'stoch_k', 'stoch_d',
-        'macd_line', 'macd_signal', 'macd_hist', 'bb_upper', 'bb_mid', 'bb_lower',
-        'atr_14', 'obv', 'vol_sma', 'pct_change', 'pct_change_3', 'pct_change_7',
-    ]
-    f = f.dropna(subset=feature_cols).reset_index(drop=True)
+    # Drop rows with NaN features
+    f = f.dropna(subset=FEATURE_COLS).reset_index(drop=True)
     return f
 
 FEATURE_COLS = [
-    'sma_7', 'sma_25', 'ema_12', 'ema_26', 'rsi_14', 'stoch_k', 'stoch_d',
-    'macd_line', 'macd_signal', 'macd_hist', 'bb_upper', 'bb_mid', 'bb_lower',
-    'atr_14', 'obv', 'vol_sma', 'pct_change', 'pct_change_3', 'pct_change_7',
+    # Trend (6)
+    'sma_7', 'sma_25', 'sma_50', 'ema_12', 'ema_26', 'adx', 'plus_di', 'minus_di',
+    # Momentum (7)
+    'rsi_14', 'rsi_7', 'stoch_k', 'stoch_d', 'williams_r', 'cci', 'roc_12', 'roc_6',
+    # MACD (3)
+    'macd_line', 'macd_signal', 'macd_hist',
+    # Volatility (4)
+    'bb_upper', 'bb_mid', 'bb_lower', 'atr_14', 'bb_width',
+    # Volume (3)
+    'obv', 'vol_sma', 'vol_ratio',
+    # Price Action (7)
+    'pct_change', 'pct_change_3', 'pct_change_7', 'pct_change_24',
+    'body_size', 'upper_shadow', 'lower_shadow', 'hl_range',
+    # Lags (5)
+    'ret_lag_1', 'ret_lag_2', 'ret_lag_3', 'ret_lag_6', 'ret_lag_12',
+    # Rolling stats (3)
+    'std_12', 'std_24', 'mean_12',
 ]
 
 # ============================================================
@@ -337,8 +402,8 @@ def _predict_forest(df: pd.DataFrame) -> dict:
     try:
         from sklearn.ensemble import RandomForestClassifier
 
-        # Train on all but last row
-        train_df = df[df['target'].notna()].iloc[:-1]
+        # Use recent 400 candles to avoid concept drift
+        train_df = df[df['target'].notna()].tail(400).iloc[:-1]
         if len(train_df) < 50:
             return {'direction': 'UP', 'confidence': 0.5}
 
@@ -346,7 +411,8 @@ def _predict_forest(df: pd.DataFrame) -> dict:
         y_train = train_df['target'].astype(int).values
 
         model = RandomForestClassifier(
-            n_estimators=100, max_depth=10, random_state=42, n_jobs=-1
+            n_estimators=200, max_depth=8, min_samples_leaf=5,
+            max_features='sqrt', random_state=42, n_jobs=-1
         )
         model.fit(X_train, y_train)
 
@@ -368,7 +434,8 @@ def _predict_xgb(df: pd.DataFrame) -> dict:
     try:
         from xgboost import XGBClassifier
 
-        train_df = df[df['target'].notna()].iloc[:-1]
+        # Use recent 400 candles to avoid concept drift
+        train_df = df[df['target'].notna()].tail(400).iloc[:-1]
         if len(train_df) < 50:
             return {'direction': 'UP', 'confidence': 0.5}
 
@@ -376,7 +443,8 @@ def _predict_xgb(df: pd.DataFrame) -> dict:
         y_train = train_df['target'].astype(int).values
 
         model = XGBClassifier(
-            n_estimators=100, max_depth=6, learning_rate=0.1,
+            n_estimators=200, max_depth=5, learning_rate=0.05,
+            subsample=0.8, colsample_bytree=0.8, reg_alpha=0.1,
             use_label_encoder=False, eval_metric='logloss', verbosity=0
         )
         model.fit(X_train, y_train)
@@ -404,36 +472,39 @@ def _tanh(x):
 
 def _predict_lstm(df: pd.DataFrame) -> dict:
     try:
-        close = df['close'].values
-        if len(close) < 60:
+        if len(df) < 120:
             return {'direction': 'UP', 'confidence': 0.5}
 
-        # Normalize to 0-1
-        seq = close[-60:]
-        mn, mx = seq.min(), seq.max()
-        if mx - mn < 1e-10:
-            return {'direction': 'UP', 'confidence': 0.5}
-        seq_norm = (seq - mn) / (mx - mn)
+        # Multi-feature input: close, rsi, macd_hist, vol_ratio
+        features = ['close', 'rsi_14', 'macd_hist', 'vol_ratio']
+        raw = df[features].tail(120).values  # (120, 4)
 
-        # Build training sequences: windows of 12 -> predict next
-        window = 12
+        # Normalize each feature to 0-1
+        mins = raw.min(axis=0)
+        maxs = raw.max(axis=0)
+        ranges = maxs - mins
+        ranges[ranges < 1e-10] = 1.0
+        data = (raw - mins) / ranges
+
+        # Build training sequences: windows of 24 -> predict next candle direction
+        window = 24
+        input_size = len(features)
         X_all, Y_all = [], []
-        for i in range(len(seq_norm) - window):
-            X_all.append(seq_norm[i:i + window])
-            Y_all.append(seq_norm[i + window])
+        for i in range(len(data) - window):
+            X_all.append(data[i:i + window])  # (24, 4)
+            # Target: 1 if next close > current close (in normalized space)
+            Y_all.append(1.0 if data[i + window, 0] > data[i + window - 1, 0] else 0.0)
         X_all = np.array(X_all)
         Y_all = np.array(Y_all)
 
-        if len(X_all) < 10:
+        if len(X_all) < 20:
             return {'direction': 'UP', 'confidence': 0.5}
 
-        # Simple single-layer LSTM
-        input_size = 1
-        hidden_size = 16
+        # LSTM params
+        hidden_size = 32
         np.random.seed(42)
-        scale = 0.1
+        scale = 0.08
 
-        # LSTM weights
         Wf = np.random.randn(hidden_size, hidden_size + input_size) * scale
         bf = np.zeros(hidden_size)
         Wi = np.random.randn(hidden_size, hidden_size + input_size) * scale
@@ -442,52 +513,43 @@ def _predict_lstm(df: pd.DataFrame) -> dict:
         bc = np.zeros(hidden_size)
         Wo = np.random.randn(hidden_size, hidden_size + input_size) * scale
         bo = np.zeros(hidden_size)
-        # Output layer
         Wy = np.random.randn(1, hidden_size) * scale
         by = np.zeros(1)
 
-        lr = 0.005
-        epochs = 30
+        lr = 0.003
+        epochs = 40
 
         def lstm_forward(x_seq):
-            """Forward pass through LSTM. x_seq shape: (seq_len,)"""
-            T = len(x_seq)
+            """Forward pass. x_seq shape: (seq_len, input_size)"""
+            T = x_seq.shape[0]
             h = np.zeros(hidden_size)
-            c = np.zeros(hidden_size)
+            c_state = np.zeros(hidden_size)
             for t in range(T):
-                xt = np.array([x_seq[t]])
+                xt = x_seq[t]  # (input_size,)
                 concat = np.concatenate([h, xt])
                 ft = _sigmoid(Wf @ concat + bf)
                 it = _sigmoid(Wi @ concat + bi)
                 ct_hat = _tanh(Wc @ concat + bc)
-                c = ft * c + it * ct_hat
+                c_state = ft * c_state + it * ct_hat
                 ot = _sigmoid(Wo @ concat + bo)
-                h = ot * _tanh(c)
+                h = ot * _tanh(c_state)
             y_pred = _sigmoid(Wy @ h + by)
             return y_pred[0], h
 
-        # Quick training loop
+        # Train
         for epoch in range(epochs):
-            total_loss = 0
             for j in range(len(X_all)):
                 y_pred, h_final = lstm_forward(X_all[j])
-                target = Y_all[j]
-                error = y_pred - target
-                total_loss += error ** 2
+                error = y_pred - Y_all[j]
+                Wy -= lr * error * h_final.reshape(1, -1)
+                by -= lr * np.array([error])
 
-                # Simple gradient update on output layer only
-                grad_Wy = error * h_final.reshape(1, -1)
-                grad_by = np.array([error])
-                Wy -= lr * grad_Wy
-                by -= lr * grad_by
+        # Predict
+        last_window = data[-window:]
+        pred_prob, _ = lstm_forward(last_window)
 
-        # Predict next value
-        last_window = seq_norm[-window:]
-        pred_val, _ = lstm_forward(last_window)
-        current_val = seq_norm[-1]
-
-        direction = 'UP' if pred_val > current_val else 'DOWN'
-        confidence = min(0.5 + abs(pred_val - current_val) * 3, 0.85)
+        direction = 'UP' if pred_prob > 0.5 else 'DOWN'
+        confidence = min(0.5 + abs(pred_prob - 0.5) * 1.8, 0.90)
         return {'direction': direction, 'confidence': confidence}
     except Exception as e:
         log.warning(f'LSTM model error: {e}')
