@@ -31,11 +31,11 @@ jobs:
 
       - name: Fetch Latest OHLCV Data
         run: python scraper.py
-        timeout-minutes: 5
+        timeout-minutes: 8
 
       - name: Run Auto-Predict & Evolve
         run: python auto_predict.py
-        timeout-minutes: 8
+        timeout-minutes: 15
 
       - name: Commit & Push Results
         run: |

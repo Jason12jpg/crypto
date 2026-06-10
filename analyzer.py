@@ -158,8 +158,8 @@ def _calc_roc(series, period=12):
     """Rate of Change."""
     return series.pct_change(period) * 100
 
-def _build_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Compute all technical indicators and target column."""
+def _build_features(df: pd.DataFrame, btc_df: pd.DataFrame = None) -> pd.DataFrame:
+    """Compute all technical indicators, multi-timeframe context, and BTC correlation."""
     f = df.copy()
     c = f['close']
     h = f['high']
@@ -167,17 +167,26 @@ def _build_features(df: pd.DataFrame) -> pd.DataFrame:
     v = f['volume']
     o = f['open']
 
-    # ---- Trend ----
+    # ---- Trend (short + long) ----
     f['sma_7'] = _calc_sma(c, 7)
     f['sma_25'] = _calc_sma(c, 25)
     f['sma_50'] = _calc_sma(c, 50)
+    f['sma_100'] = _calc_sma(c, 100)   # ~4-day trend
+    f['sma_168'] = _calc_sma(c, 168)   # 7-day trend
     f['ema_12'] = _calc_ema(c, 12)
     f['ema_26'] = _calc_ema(c, 26)
+    f['ema_50'] = _calc_ema(c, 50)
     f['adx'], f['plus_di'], f['minus_di'] = _calc_adx(h, l, c, 14)
 
-    # ---- Momentum ----
+    # Trend position: where is price relative to long-term MAs
+    f['above_sma100'] = (c > f['sma_100']).astype(float)
+    f['above_sma168'] = (c > f['sma_168']).astype(float)
+    f['trend_strength'] = (f['sma_7'] - f['sma_25']) / (c + 1e-10) * 100
+
+    # ---- Momentum (multi-period) ----
     f['rsi_14'] = _calc_rsi(c, 14)
     f['rsi_7'] = _calc_rsi(c, 7)
+    f['rsi_28'] = _calc_rsi(c, 28)    # longer-term RSI
     f['stoch_k'], f['stoch_d'] = _calc_stochastic(h, l, c, 14)
     f['williams_r'] = _calc_williams_r(h, l, c, 14)
     f['cci'] = _calc_cci(h, l, c, 20)
@@ -191,6 +200,7 @@ def _build_features(df: pd.DataFrame) -> pd.DataFrame:
     f['bb_upper'], f['bb_mid'], f['bb_lower'] = _calc_bollinger(c)
     f['atr_14'] = _calc_atr(h, l, c, 14)
     f['bb_width'] = (f['bb_upper'] - f['bb_lower']) / (f['bb_mid'] + 1e-10)
+    f['bb_position'] = (c - f['bb_lower']) / (f['bb_upper'] - f['bb_lower'] + 1e-10)
 
     # ---- Volume ----
     f['obv'] = _calc_obv(c, v)
@@ -201,13 +211,13 @@ def _build_features(df: pd.DataFrame) -> pd.DataFrame:
     f['pct_change'] = c.pct_change()
     f['pct_change_3'] = c.pct_change(3)
     f['pct_change_7'] = c.pct_change(7)
-    f['pct_change_24'] = c.pct_change(24)  # 24h change
-    f['body_size'] = (c - o).abs() / (c + 1e-10)  # candle body ratio
+    f['pct_change_24'] = c.pct_change(24)
+    f['body_size'] = (c - o).abs() / (c + 1e-10)
     f['upper_shadow'] = (h - pd.concat([c, o], axis=1).max(axis=1)) / (c + 1e-10)
     f['lower_shadow'] = (pd.concat([c, o], axis=1).min(axis=1) - l) / (c + 1e-10)
     f['hl_range'] = (h - l) / (c + 1e-10)
 
-    # ---- Lag features (past N candle returns) ----
+    # ---- Lag features ----
     for lag in [1, 2, 3, 6, 12]:
         f[f'ret_lag_{lag}'] = c.pct_change(lag)
 
@@ -215,6 +225,18 @@ def _build_features(df: pd.DataFrame) -> pd.DataFrame:
     f['std_12'] = c.pct_change().rolling(12).std()
     f['std_24'] = c.pct_change().rolling(24).std()
     f['mean_12'] = c.pct_change().rolling(12).mean()
+
+    # ---- BTC Correlation (for altcoins) ----
+    if btc_df is not None and not btc_df.empty:
+        btc_c = btc_df.set_index('timestamp')['close'].reindex(f['timestamp']).values
+        btc_series = pd.Series(btc_c, index=f.index)
+        f['btc_ret_6h'] = btc_series.pct_change(6)
+        f['btc_ret_24h'] = btc_series.pct_change(24)
+        f['btc_trend'] = (_calc_sma(btc_series, 7) > _calc_sma(btc_series, 25)).astype(float)
+    else:
+        f['btc_ret_6h'] = 0.0
+        f['btc_ret_24h'] = 0.0
+        f['btc_trend'] = 0.5
 
     # Target: 1 if next close > current close, else 0
     f['target'] = (c.shift(-1) > c).astype(int)
@@ -224,23 +246,27 @@ def _build_features(df: pd.DataFrame) -> pd.DataFrame:
     return f
 
 FEATURE_COLS = [
-    # Trend (6)
-    'sma_7', 'sma_25', 'sma_50', 'ema_12', 'ema_26', 'adx', 'plus_di', 'minus_di',
-    # Momentum (7)
-    'rsi_14', 'rsi_7', 'stoch_k', 'stoch_d', 'williams_r', 'cci', 'roc_12', 'roc_6',
+    # Trend (11)
+    'sma_7', 'sma_25', 'sma_50', 'sma_100', 'sma_168',
+    'ema_12', 'ema_26', 'ema_50', 'adx', 'plus_di', 'minus_di',
+    'above_sma100', 'above_sma168', 'trend_strength',
+    # Momentum (8)
+    'rsi_14', 'rsi_7', 'rsi_28', 'stoch_k', 'stoch_d', 'williams_r', 'cci', 'roc_12', 'roc_6',
     # MACD (3)
     'macd_line', 'macd_signal', 'macd_hist',
-    # Volatility (4)
-    'bb_upper', 'bb_mid', 'bb_lower', 'atr_14', 'bb_width',
+    # Volatility (5)
+    'bb_upper', 'bb_mid', 'bb_lower', 'atr_14', 'bb_width', 'bb_position',
     # Volume (3)
     'obv', 'vol_sma', 'vol_ratio',
-    # Price Action (7)
+    # Price Action (8)
     'pct_change', 'pct_change_3', 'pct_change_7', 'pct_change_24',
     'body_size', 'upper_shadow', 'lower_shadow', 'hl_range',
     # Lags (5)
     'ret_lag_1', 'ret_lag_2', 'ret_lag_3', 'ret_lag_6', 'ret_lag_12',
     # Rolling stats (3)
     'std_12', 'std_24', 'mean_12',
+    # BTC correlation (3)
+    'btc_ret_6h', 'btc_ret_24h', 'btc_trend',
 ]
 
 # ============================================================
@@ -486,8 +512,8 @@ def _predict_lstm(df: pd.DataFrame) -> dict:
         ranges[ranges < 1e-10] = 1.0
         data = (raw - mins) / ranges
 
-        # Build training sequences: windows of 24 -> predict next candle direction
-        window = 24
+        # Build training sequences: windows of 12 -> predict next candle direction
+        window = 12
         input_size = len(features)
         X_all, Y_all = [], []
         for i in range(len(data) - window):
@@ -501,7 +527,7 @@ def _predict_lstm(df: pd.DataFrame) -> dict:
             return {'direction': 'UP', 'confidence': 0.5}
 
         # LSTM params
-        hidden_size = 32
+        hidden_size = 16
         np.random.seed(42)
         scale = 0.08
 
@@ -516,8 +542,8 @@ def _predict_lstm(df: pd.DataFrame) -> dict:
         Wy = np.random.randn(1, hidden_size) * scale
         by = np.zeros(1)
 
-        lr = 0.003
-        epochs = 40
+        lr = 0.005
+        epochs = 15
 
         def lstm_forward(x_seq):
             """Forward pass. x_seq shape: (seq_len, input_size)"""
@@ -572,15 +598,20 @@ ALL_MODELS = {
 def generate_prediction(symbol: str) -> dict:
     """Generate weighted prediction for a symbol using all 8 models."""
     df = load_data(symbol)
-    if len(df) < 100:
-        log.warning(f'[{symbol}] 数据不足 ({len(df)} 行)，至少需要 100 行')
-        return {'symbol': symbol, 'direction': 'UP', 'confidence': 50.0,
+    if len(df) < 200:
+        log.warning(f'[{symbol}] 数据不足 ({len(df)} 行)，至少需要 200 行')
+        return {'symbol': symbol, 'direction': 'HOLD', 'confidence': 0.0,
                 'model_votes': {}, 'weights': DEFAULT_WEIGHTS}
 
-    feat_df = _build_features(df)
+    # Load BTC data for correlation (for altcoins)
+    btc_df = None
+    if symbol != 'BTC/USDT':
+        btc_df = load_data('BTC/USDT')
+
+    feat_df = _build_features(df, btc_df)
     if len(feat_df) < 50:
         log.warning(f'[{symbol}] 特征数据不足 ({len(feat_df)} 行)')
-        return {'symbol': symbol, 'direction': 'UP', 'confidence': 50.0,
+        return {'symbol': symbol, 'direction': 'HOLD', 'confidence': 0.0,
                 'model_votes': {}, 'weights': DEFAULT_WEIGHTS}
 
     weights = load_weights(symbol)
@@ -606,24 +637,24 @@ def generate_prediction(symbol: str) -> dict:
     # Direction = whichever side has more weighted conviction
     final_direction = 'UP' if up_score >= down_score else 'DOWN'
 
-    # Confidence = how dominant the winning side is (50% = dead split, 100% = unanimous)
+    # Confidence = how dominant the winning side is
     winning_score = max(up_score, down_score)
     dominance = winning_score / total_score  # 0.5 ~ 1.0
-
-    # Scale dominance to a user-friendly 50-95% range
-    # dominance=0.5 → 50%, dominance=1.0 → 95%
     final_confidence = 50.0 + (dominance - 0.5) * 90.0
     final_confidence = min(max(final_confidence, 50.0), 95.0)
 
-    # Bonus: count how many models agree
+    # Bonus: model agreement
     agree_count = sum(1 for v in model_votes.values() if v['direction'] == final_direction)
-    # 8/8 agree → +5%, 7/8 → +3%, 6/8 → +1%
     if agree_count >= 8:
         final_confidence = min(final_confidence + 5, 95.0)
     elif agree_count >= 7:
         final_confidence = min(final_confidence + 3, 95.0)
     elif agree_count >= 6:
         final_confidence = min(final_confidence + 1, 95.0)
+
+    # HOLD mechanism: if confidence is too low, don't make a call
+    if final_confidence < 55.0:
+        final_direction = 'HOLD'
 
     return {
         'symbol': symbol,

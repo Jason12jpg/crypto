@@ -19,7 +19,7 @@ SYMBOLS = [
     'ADA/USDT', 'AVAX/USDT', 'LINK/USDT', 'DOT/USDT', 'SUI/USDT',
 ]
 TIMEFRAME = '1h'
-INITIAL_CANDLES = 720  # 30 days of hourly data
+INITIAL_CANDLES = 2160  # 90 days of hourly data
 
 
 def fetch_ohlcv(exchange, symbol: str, since_ms: int = None, limit: int = 1000) -> list:
